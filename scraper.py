@@ -1,5 +1,6 @@
 import os
 import time
+import re
 import requests
 import logging
 from selenium import webdriver
@@ -8,208 +9,245 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("scraper_debug.log", mode='w'),
+        logging.FileHandler("scraper_debug.log", mode='w', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 
+def dump_section(driver, selector, filename):
+    try:
+        element = driver.find_element(By.CSS_SELECTOR, selector)
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(element.get_attribute("outerHTML"))
+        logging.info(f"Dumped section {selector} to {filename}")
+    except:
+        logging.warning(f"Failed to dump section {selector}")
+
 def setup_driver():
     options = webdriver.ChromeOptions()
-    # options.add_argument('--headless=new') # Disabled for user showcase
+    # options.add_argument('--headless=new') # Enabled for faster execution if needed
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    driver_path = r"C:/Users/sheha/.wdm/drivers/chromedriver/win64/144.0.7559.96/chromedriver-win32/chromedriver.exe"
-    service = Service(executable_path=driver_path)
+    # Hardcoded path to cached driver to bypass network issues
+    driver_path = r"C:\Users\sheha\.wdm\drivers\chromedriver\win64\144.0.7559.96\chromedriver-win32\chromedriver.exe"
+    service = Service(driver_path)
     return webdriver.Chrome(service=service, options=options)
 
 def safe_click(driver, element, name="Element"):
-    """Tries multiple ways to click an element."""
     try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        time.sleep(0.5)
+        WebDriverWait(driver, 5).until(EC.element_to_be_clickable(element))
         element.click()
         logging.info(f"Clicked {name} (Standard)")
         return True
-    except Exception as e1:
+    except:
         try:
             driver.execute_script("arguments[0].click();", element)
             logging.info(f"Clicked {name} (JS)")
             return True
-        except Exception as e2:
-            try:
-                actions = ActionChains(driver)
-                actions.move_to_element(element).click().perform()
-                logging.info(f"Clicked {name} (ActionChains)")
-                return True
-            except Exception as e3:
-                logging.error(f"Failed to click {name}: {e3}")
-                return False
+        except Exception as e:
+            logging.error(f"Failed to click {name}: {e}")
+            return False
 
-def download_file(url, folder, filename, driver_cookies):
-    if not os.path.exists(folder): os.makedirs(folder)
-    filepath = os.path.join(folder, filename)
-    if os.path.exists(filepath): 
-        logging.info(f"Skipping {filename}, exists.")
-        return
-    try:
-        s = requests.Session()
-        for c in driver_cookies: s.cookies.set(c['name'], c['value'])
-        r = s.get(url, stream=True)
-        content_type = r.headers.get('Content-Type', '').lower()
-        
-        if 'application/pdf' in content_type:
-            with open(filepath, 'wb') as f:
-                for chunk in r.iter_content(8192): f.write(chunk)
-            logging.info(f"Downloaded: {filename}")
-        else:
-            logging.warning(f"File {filename} is not PDF (Type: {content_type})")
-
-    except Exception as e:
-        logging.error(f"DL Error {filename}: {e}")
-
-def run():
-    logging.info("Starting Scraper Run...")
+def download_papers():
+    logging.info("Starting Selenium Scraper Proof of Concept...")
     driver = setup_driver()
+    wait = WebDriverWait(driver, 20)
+    
     try:
         driver.get("https://qualifications.pearson.com/en/support/support-topics/exams/past-papers.html")
-        time.sleep(5)
-
-        # Cookie
+        logging.info(f"Page loaded: {driver.current_url}")
+        
+        # Cookie banner
         try:
-            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
-            btn.click()
+            cookie_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+            cookie_btn.click()
             logging.info("Cookies accepted")
-            time.sleep(2)
-        except: 
-            logging.info("Cookie banner not found or skipped")
+            time.sleep(1)
+        except:
+            logging.info("No cookie banner found")
 
-        # Navigate to the correct section
-        logging.info("Looking for findpastpapers section...")
+        # Find findpastpapers section
+        findpastpapers = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "findpastpapers")))
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", findpastpapers)
+        time.sleep(2)
+        dump_section(driver, ".findpastpapers", "findpastpapers_initial.html")
+        
+        # Step 1: Select A Level
+        logging.info("Step 1: Selecting A Level...")
+        alevel_xpath = "//div[contains(@class, 'findpastpapers')]//*[contains(text(), 'A Level') and not(ancestor::select)]"
+        alevel = wait.until(EC.visibility_of_element_located((By.XPATH, alevel_xpath)))
+        safe_click(driver, alevel, "A Level")
+        time.sleep(3)
+        logging.info(f"After Step 1: {driver.current_url}")
+        driver.save_screenshot("selenium_after_alevel.png")
+        
+        # Ensure we are still on the same page
+        if "past-papers.html" not in driver.current_url:
+            logging.warning("Navigated away from past-papers page! Reloading...")
+            driver.get("https://qualifications.pearson.com/en/support/support-topics/exams/past-papers.html")
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "findpastpapers")))
+            # Re-select A Level if needed (usually it remembers or we just try again)
+        
+        # Step 2: Select Mathematics
+        logging.info("Step 2: Selecting Mathematics...")
+        
+        # 2a: Switch to Current qualifications
+        try:
+            current_tab = driver.find_element(By.XPATH, "//div[contains(@class, 'findpastpapers')]//a[contains(text(), 'Current qualifications')]")
+            if current_tab.is_displayed():
+                safe_click(driver, current_tab, "Current qualifications tab")
+                time.sleep(2)
+        except: pass
+        
+        # 2b: Click 'M'
+        logging.info("Step 2b: Clicking 'M'...")
+        try:
+            # Try a very direct XPath for the 'M' in the alphabet grid
+            m_xpath = "//div[contains(@class, 'findpastpapers')]//li[(text()='M' or normalize-space(.)='M')]"
+            alphabet_m = wait.until(EC.presence_of_element_located((By.XPATH, m_xpath)))
+            
+            # Use JS to click if standard fails
+            for _ in range(2):
+                safe_click(driver, alphabet_m, "Alphabet M")
+                time.sleep(1)
+                # Check for Mathematics
+                if "Mathematics" in driver.page_source:
+                    break
+            driver.save_screenshot("selenium_after_m.png")
+        except Exception as e:
+            logging.warning(f"Alphabet M click failed: {e}")
+            dump_section(driver, ".findpastpapers", "findpastpapers_error.html")
+        
+        # 2c: Click Mathematics
+        logging.info("Step 2c: Looking for Mathematics link...")
+        try:
+            # Flexible case-insensitive search
+            math_xpath = "//div[contains(@class, 'findpastpapers')]//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mathematics')]"
+            
+            def math_finder(d):
+                links = d.find_elements(By.XPATH, math_xpath)
+                for l in links:
+                    if l.is_displayed(): return l
+                return False
+                
+            math_link = wait.until(math_finder)
+            logging.info(f"Found Mathematics link: {math_link.text}")
+            safe_click(driver, math_link, "Mathematics")
+            time.sleep(3)
+            driver.save_screenshot("selenium_after_math.png")
+        except Exception as e:
+            logging.error(f"Failed to find Mathematics: {e}")
+            dump_section(driver, ".findpastpapers", "findpastpapers_no_math.html")
+            # Try a very broad fallback
+            try:
+                math_fallback = driver.find_element(By.LINK_TEXT, "Mathematics")
+                safe_click(driver, math_fallback, "Mathematics (Fallback)")
+            except: pass
+        
+        # Step 3: Select Exam Series
+        logging.info("Step 3: Selecting Exam Series...")
         time.sleep(2)
         
-        # Find the findpastpapers section
-        try:
-            findpastpapers = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "findpastpapers"))
-            )
-            logging.info("Found findpastpapers section")
-            
-            # Scroll to it
-            driver.execute_script("arguments[0].scrollIntoView(true);", findpastpapers)
-            time.sleep(1)
-            driver.save_screenshot("findpastpapers_section.png")
-            
-            # Find the inner container - try multiple approaches
-            inner_container = None
+        series_found = False
+        for year in ['2024', '2023', '2022', '2021', '2025']:
             try:
-                # Try specific class pattern first
-                inner_container = findpastpapers.find_element(By.XPATH, ".//*[contains(@class, 'findpastpapers_')]")
-                logging.info(f"Found inner container: {inner_container.get_attribute('class')}")
-            except:
-                # Fallback: just use findpastpapers itself
-                logging.info("Using findpastpapers section directly")
-                inner_container = findpastpapers
-            
-            # Look for the step sections directly
-            # Step 1: Select a qualification
-            logging.info("Step 1: Selecting Qualification Family (A Level)")
-            time.sleep(1)
-            
-            # Find A Level - it should be in a list or dropdown
-            alevel_option = inner_container.find_element(By.XPATH, ".//*[contains(text(), 'A Level') and not(ancestor::select)]")
-            safe_click(driver, alevel_option, "A Level")
-            time.sleep(2)
-            driver.save_screenshot("after_alevel.png")
-            
-            # Step 2: Subjects
-            logging.info("Step 2: Selecting Subject (Mathematics)")
-            time.sleep(1)
-            
-            # Find Mathematics
-            math_option = inner_container.find_element(By.XPATH, ".//*[contains(text(), 'Mathematics') and not(contains(text(), 'Further'))]")
-            safe_click(driver, math_option, "Mathematics")
-            time.sleep(2)
-            driver.save_screenshot("after_math.png")
-            
-            # Step 3: Exam Series
-            logging.info("Step 3: Selecting Exam Series")
-            time.sleep(1)
-            
-            # Find June series
-            series_options = inner_container.find_elements(By.XPATH, ".//*[contains(text(), 'June')]")
-            series_target = None
-            for opt in series_options:
-                if opt.is_displayed() and any(year in opt.text for year in ['2024', '2023', '2022']):
-                    series_target = opt
+                series_xpath = f"//a[contains(text(), 'June {year}')]"
+                series_opt = driver.find_element(By.XPATH, series_xpath)
+                if series_opt.is_displayed():
+                    series_name = series_opt.text.strip()
+                    logging.info(f"Clicking series: {series_name}")
+                    safe_click(driver, series_opt, series_name)
+                    series_found = True
                     break
+            except: continue
             
-            if series_target:
-                series_name = series_target.text.strip()
-                safe_click(driver, series_target, f"Series: {series_name}")
-                time.sleep(3)
-                driver.save_screenshot("after_series.png")
-            else:
-                logging.warning("No recent June series found")
-            
-            # Step 4: Content Type (if needed)
-            logging.info("Step 4: Checking for content type filter")
+        if not series_found:
             try:
-                qp_option = inner_container.find_element(By.XPATH, ".//*[contains(text(), 'Question paper')]")
-                safe_click(driver, qp_option, "Question Papers")
-                time.sleep(2)
+                fallback_june = driver.find_element(By.XPATH, "//a[contains(text(), 'June')]")
+                safe_click(driver, fallback_june, "Fallback June")
+                series_found = True
             except:
-                logging.info("No content type filter found or needed")
-            
-            # Wait for results to load
-            logging.info("Waiting for results to load...")
-            time.sleep(5)
-            driver.save_screenshot("results_page.png")
-            
-            # Look for PDF links
-            pdf_links = driver.find_elements(By.XPATH, 
-                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'question paper')] | //a[contains(@href, '.pdf')]")
-            
-            visible_links = [link for link in pdf_links if link.is_displayed()]
-            logging.info(f"Found {len(visible_links)} PDF links")
-            
-            if visible_links:
-                cookies = driver.get_cookies()
-                folder = "papers/mathematics"
-                
-                for i, link in enumerate(visible_links[:10]):  # Download up to 10
-                    url = link.get_attribute("href")
-                    text = link.text.strip()
-                    filename = f"{text[:50] if text else f'paper_{i}'}.pdf"
-                    filename = "".join([c for c in filename if c.isalnum() or c in (' ', '-', '_', '.')]).strip()
-                    
-                    logging.info(f"Downloading: {filename}")
-                    download_file(url, folder, filename, cookies)
-                    
-                logging.info(f"Successfully downloaded {min(len(visible_links), 10)} papers")
-            else:
-                logging.warning("No PDF links found!")
-                with open("no_results.html", "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
-                    
-        except Exception as e:
-            logging.error(f"Error navigating sections: {e}")
-            driver.save_screenshot("section_error.png")
+                logging.warning("No June series found")
 
+        if series_found:
+            time.sleep(5)
+            driver.save_screenshot("selenium_after_series.png")
+            
+        # Step 4: Content Type
+        logging.info("Step 4: Checking for Question paper filter...")
+        try:
+            qp_xpath = "//li[contains(., 'Question paper')] | //span[contains(text(), 'Question paper')]"
+            qp_filter = driver.find_element(By.XPATH, qp_xpath)
+            safe_click(driver, qp_filter, "Question paper filter")
+            time.sleep(5)
+        except:
+            logging.info("No content type filter found")
+
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        driver.save_screenshot("selenium_results.png")
+        
+        # Extract PDFs
+        logging.info("Looking for PDF links...")
+        links = driver.find_elements(By.XPATH, "//a[contains(@href, '.pdf')]")
+        logging.info(f"Found {len(links)} total PDF links")
+        
+        if links:
+            download_dir = "papers/mathematics2"
+            if not os.path.exists(download_dir): os.makedirs(download_dir)
+            
+            # Prepare session for requests
+            session = requests.Session()
+            for cookie in driver.get_cookies():
+                session.cookies.set(cookie['name'], cookie['value'])
+            user_agent = driver.execute_script("return navigator.userAgent")
+            session.headers.update({'User-Agent': user_agent})
+
+            count = 0
+            for link in links:
+                try:
+                    text = link.text.strip()
+                    href = link.get_attribute("href")
+                    if not href: continue
+                    
+                    if any(term in text.lower() for term in ["question paper", "qp"]):
+                        filename = "".join([c for c in f"{text[:50]}.pdf" if c.isalnum() or c in (' ', '-', '_', '.')]).strip()
+                        logging.info(f"Downloading: {filename} from {href}")
+                        
+                        try:
+                            res = session.get(href, timeout=30)
+                            if res.status_code == 200:
+                                with open(os.path.join(download_dir, filename), "wb") as f:
+                                    f.write(res.content)
+                                count += 1
+                                logging.info(f"Successfully downloaded {filename}")
+                            else:
+                                logging.error(f"Failed status: {res.status_code}")
+                        except Exception as e:
+                            logging.error(f"Download error: {e}")
+                except: pass
+            logging.info(f"Total downloaded: {count}")
+        else:
+            logging.warning("No PDF links found")
+            
     except Exception as e:
-        logging.error(f"Global Error: {e}")
-        driver.save_screenshot("error_screenshot.png")
+        logging.error(f"Error: {e}")
+        driver.save_screenshot("selenium_error.png")
     finally:
         driver.quit()
-        logging.info("Driver Closed")
-
-
+        logging.info("Driver closed")
 
 if __name__ == "__main__":
-    run()
+    download_papers()
